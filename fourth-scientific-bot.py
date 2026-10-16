@@ -36,7 +36,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "BOT_TOKEN").strip()
 OWNER_ID = int(os.getenv("OWNER_ID", "7683201905"))
 CHANNEL_DEFAULT = os.getenv("CHANNEL", "@Kii_8i").strip() or "@Kii_8i"
 SITE_URL = os.getenv("SITE_URL", "").strip()
