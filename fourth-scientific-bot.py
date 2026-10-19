@@ -40,7 +40,7 @@ except ImportError:  # أدوات PDF تحتاج: pip install pypdf
 # الإعدادات
 # ============================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()  # ضعه في متغيرات البيئة في الاستضافة
+BOT_TOKEN = os.getenv("BOT_TOKEN", "BOT_TOKEN").strip()  # ضعه في متغيرات البيئة في الاستضافة
 OWNER_ID = 7683201905
 DB_FILE = "fourth_scientific_bot.db"
 DEFAULT_CHANNEL = "@Kii_8i"
