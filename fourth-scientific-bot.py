@@ -2284,7 +2284,7 @@ async def h_edit(msg, ctx, uid, f, text, media):
 
     if step == "bnode":
                 act = f.get("opts", {}).get(text)
-    if not act:
+        if not act:
             return await fail(msg, ctx, "اختر من الأزرار.")
         k = act[0]
         if k == "bname":
