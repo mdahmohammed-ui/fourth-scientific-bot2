@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import time
+from collections import OrderedDict
 from datetime import datetime
 
 from telegram import (
@@ -14,8 +15,8 @@ from telegram import (
     InputMediaDocument,
     InputMediaPhoto,
     InputTextMessageContent,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
+    MessageEntity,
+    ReplyKeyboardRemove,
     Update,
 )
 from telegram.constants import ParseMode
@@ -35,7 +36,7 @@ from telegram.ext import (
 # ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()  # ضعه في متغيرات البيئة في الاستضافة
-OWNER_ID = 7683201905
+OWNER_ID = 6670182910
 DB_FILE = "fourth_scientific_bot.db"
 DEFAULT_CHANNEL = "@Kii_8i"
 DEFAULT_FOOTER = (
@@ -70,7 +71,8 @@ BROADCAST_BATCH = 25          # عدد الرسائل بالثانية الوا�
 TEXT_LIMIT = 4096
 CAPTION_LIMIT = 1024
 
-HOME_TEXT = "هلا بيك ببوت الرابع العلمي 🎓\nاختر من الأزرار بالأسفل:"
+HOME_EMOJI_ID = "5384273819487717218"  # 🤍 مميز
+HOME_TEXT = "هلا بيك ببوت الرابع العلمي 🤍\nاختر من الأزرار بالأسفل:"
 GATE_TEXT = "حتى تستخدم البوت، اشترك بالقنوات أولاً، ثم اضغط التحقق من الاشتراك."
 MAINT_TEXT = "البوت تحت الصيانة، سيتم اضافة مميزات جديدة."
 BACK = "🔙 رجوع"
@@ -86,6 +88,25 @@ SUB_LABEL = "🔒 الاشتراك الإجباري"
 COLORS = {"🟢 أخضر": "success", "🔵 أزرق": "primary", "🔴 أحمر": "danger"}
 COLOR_ROW = [("🟢 أخضر", "success"), ("🔵 أزرق", "primary"), ("🔴 أحمر", "danger")]
 MEMBER_OK = ("member", "administrator", "creator")
+
+# الإيموجي المميز: كل زر يبدأ بإيموجي له ID هنا يطلع مميز
+NO_ICON = {STORY_LABEL}
+PREMIUM_ICONS = {
+    "📐": "4981251676322136609",   # رياضيات
+    "⚡": "5361815164913993299",   # فيزياء
+    "🧪": "5373098009640836781",   # كيمياء
+    "🧬": "5359312289902127071",   # أحياء
+    "💻": "5262886236837656107",   # الحاسوب
+    "🇬🇧": "5202196682497859879",  # English
+    "📚": "5431721976769027887",   # اللغة العربية
+    "📖": "5785164748341384735",   # التربية الإسلامية
+    "⚖️": "5413725110316062621",   # جرائم حزب البعث
+    "📘": "5226512880362332956",   # الكتب
+    "📙": "5267198345348160247",   # الملازم
+    "🔙": "5451879400750474312",   # رجوع
+}
+# إيموجيات تطلع مميزة داخل أي نص أو كابشن
+CUSTOM_IN_TEXT = {"🔗": "5348241925797351278", "🤍": HOME_EMOJI_ID}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("bot")
@@ -357,6 +378,8 @@ CHANNELS = []        # كاش قنوات الاشتراك الإجباري
 LAST_WARN = {}       # آخر تحذير للمالك عن كل قناة
 BCAST = {"running": False}
 BG_TASKS = set()
+BTN_TEXT = OrderedDict()   # نص كل زر إنلاين، يُربط برقم يُرسل مع الضغطة
+_BTN_SEQ = [0]
 
 
 def q(sql, p=()):
@@ -563,15 +586,34 @@ def style_for(label):
     return "danger" if any(w in label for w in ("حذف", "رجوع", "إلغاء")) else "primary"
 
 
+def _icon_split(text):
+    """يفصل الإيموجي عن نص الزر، ويرجع ID الإيموجي المميز إن وُجد."""
+    if text in NO_ICON:
+        return text, None
+    for emo, eid in PREMIUM_ICONS.items():
+        if text.startswith(emo):
+            rest = text[len(emo):].strip()
+            return (rest or text), eid
+    return text, None
+
+
 def kb(rows):
+    """كل الأزرار إنلاين تحت الرسالة. الضغطة ترجع للبوت كنص الزر نفسه."""
     out = []
     for row in rows:
         line = []
         for item in row:
             text, style = item if isinstance(item, tuple) else (item, "success")
-            line.append(KeyboardButton(text, style=style))
+            shown, icon = _icon_split(text)
+            _BTN_SEQ[0] += 1
+            key = str(_BTN_SEQ[0])
+            BTN_TEXT[key] = text
+            if len(BTN_TEXT) > 5000:
+                BTN_TEXT.popitem(last=False)
+            extra = {"icon_custom_emoji_id": icon} if icon else {}
+            line.append(InlineKeyboardButton(shown, callback_data=f"b:{key}", style=style, **extra))
         out.append(line)
-    return ReplyKeyboardMarkup(out, resize_keyboard=True, is_persistent=True)
+    return InlineKeyboardMarkup(out)
 
 
 def build_menu(ctx, items, back=True):
@@ -610,19 +652,43 @@ def tg_len(s):
     return len(s.encode("utf-16-le")) // 2
 
 
+def custom_entities(text):
+    """يحوّل كل إيموجي في CUSTOM_IN_TEXT داخل النص إلى إيموجي مميز."""
+    out = []
+    for emo, eid in CUSTOM_IN_TEXT.items():
+        start = 0
+        while True:
+            i = text.find(emo, start)
+            if i == -1:
+                break
+            out.append(MessageEntity(type="custom_emoji", offset=tg_len(text[:i]),
+                                     length=tg_len(emo), custom_emoji_id=eid))
+            start = i + len(emo)
+    out.sort(key=lambda e: e.offset)
+    return out
+
+
+def cap_kw(cap):
+    """cap = (النص، الإيموجي المميز) ترجع kwargs للإرسال."""
+    return {"caption": cap[0], "caption_entities": cap[1] or None}
+
+
 def make_caption(head, footer):
-    """يقص العنوان فقط ويحافظ على التذييل كاملاً."""
+    """يقص العنوان فقط ويحافظ على التذييل كاملاً. يرجع (النص، الإيموجي المميز)."""
     if not footer:
-        return head[:CAPTION_LIMIT]
-    room = CAPTION_LIMIT - tg_len(footer) - 2
-    if room < 1:
-        return footer[:CAPTION_LIMIT]
-    return f"{head[:room]}\n\n{footer}"
+        text = head[:CAPTION_LIMIT]
+    else:
+        room = CAPTION_LIMIT - tg_len(footer) - 2
+        text = footer[:CAPTION_LIMIT] if room < 1 else f"{head[:room]}\n\n{footer}"
+    return text, custom_entities(text)
 
 
 def footer_caption():
     footer = setting("footer", DEFAULT_FOOTER)
-    return footer[:CAPTION_LIMIT] if footer else None
+    if not footer:
+        return None
+    text = footer[:CAPTION_LIMIT]
+    return text, custom_entities(text)
 
 
 def gate_markup(token=""):
@@ -705,6 +771,15 @@ def parse_ref(text):
     if re.fullmatch(r"-100\d+", t):
         return t
     return None
+
+
+async def clear_reply_keyboard(bot, chat):
+    """يشيل لوحة الكيبورد القديمة من تحت خانة الكتابة (تبقى مرة وحدة عند /start)."""
+    try:
+        m = await bot.send_message(chat, "\u2060", reply_markup=ReplyKeyboardRemove())
+        await m.delete()
+    except TelegramError:
+        pass
 
 
 # ============================================================
@@ -838,44 +913,45 @@ def split_text(body, limit=3900):
     return [p for p in parts if p.strip()]
 
 
-async def _send_single(ctx, chat, ctype, fid, caption=None):
+async def _send_single(ctx, chat, ctype, fid, cap=None):
+    kw = cap_kw(cap) if cap else {}
     if ctype == "photo":
-        await ctx.bot.send_photo(chat, fid, caption=caption)
+        await ctx.bot.send_photo(chat, fid, **kw)
     else:
-        await ctx.bot.send_document(chat, fid, caption=caption)
+        await ctx.bot.send_document(chat, fid, **kw)
 
 
-async def send_group(ctx, chat, ctype, values, caption=None):
+async def send_group(ctx, chat, ctype, values, cap=None):
     if ctype == "text":
         for body in values:
             for part in split_text(body):
                 try:
-                    await ctx.bot.send_message(chat, part)
+                    await ctx.bot.send_message(chat, part, entities=custom_entities(part) or None)
                 except TelegramError as e:
                     log.error("Text send failed: %s", e)
         return
     if len(values) == 1:
         try:
-            await _send_single(ctx, chat, ctype, values[0], caption)
+            await _send_single(ctx, chat, ctype, values[0], cap)
         except TelegramError as e:
             log.error("Single send failed: %s", e)
         return
     cls = InputMediaPhoto if ctype == "photo" else InputMediaDocument
     media = [cls(v) for v in values]
-    if caption:
-        media[0] = cls(values[0], caption=caption)
+    if cap:
+        media[0] = cls(values[0], **cap_kw(cap))
     try:
         await ctx.bot.send_media_group(chat, media)
     except TelegramError as e:
         log.error("Media group failed, sending one by one: %s", e)
         for i, v in enumerate(values):
             try:
-                await _send_single(ctx, chat, ctype, v, caption if i == 0 else None)
+                await _send_single(ctx, chat, ctype, v, cap if i == 0 else None)
             except TelegramError as e2:
                 log.error("Fallback send failed: %s", e2)
 
 
-async def send_items(ctx, chat, items, caption=None):
+async def send_items(ctx, chat, items, cap=None):
     """items: قائمة (النوع، النص، الـ file_id) بالترتيب المطلوب."""
     groups = []
     for ctype, body, fid in items:
@@ -885,12 +961,12 @@ async def send_items(ctx, chat, items, caption=None):
             groups[-1][1].append(fid)
         else:
             groups.append((ctype, [fid]))
-    cap_left = caption
+    cap_left = cap
     for ctype, values in groups:
-        cap = None
+        c = None
         if ctype != "text" and cap_left:
-            cap, cap_left = cap_left, None
-        await send_group(ctx, chat, ctype, values, cap)
+            c, cap_left = cap_left, None
+        await send_group(ctx, chat, ctype, values, c)
 
 
 async def send_file(ctx, chat, row_id, uid):
@@ -899,12 +975,12 @@ async def send_file(ctx, chat, row_id, uid):
         await ctx.bot.send_message(chat, "الملف غير متاح حالياً.")
         return
     head = row["teacher"] if row["kind"] == "note" and row["teacher"] else row["title"]
-    caption = make_caption(head, setting("footer", DEFAULT_FOOTER))
+    cap = make_caption(head, setting("footer", DEFAULT_FOOTER))
     try:
         if row["ftype"] == "photo":
-            await ctx.bot.send_photo(chat, row["file_id"], caption=caption)
+            await ctx.bot.send_photo(chat, row["file_id"], **cap_kw(cap))
         else:
-            await ctx.bot.send_document(chat, row["file_id"], caption=caption)
+            await ctx.bot.send_document(chat, row["file_id"], **cap_kw(cap))
     except TelegramError as e:
         log.error("Send failed for file %s: %s", row["id"], e)
         await ctx.bot.send_message(chat, "تعذر إرسال الملف. أبلغ المالك.")
@@ -920,7 +996,7 @@ async def send_question_set(ctx, chat, sid, sec, month, uid):
         await ctx.bot.send_message(chat, "سيتم إضافة الأسئلة لاحقاً.")
         return
     items = [("photo" if r["ftype"] == "photo" else "document", None, r["file_id"]) for r in rows]
-    await send_items(ctx, chat, items, caption=footer_caption())
+    await send_items(ctx, chat, items, cap=footer_caption())
 
 
 async def deliver(ctx, chat, token, uid):
@@ -939,7 +1015,7 @@ async def deliver(ctx, chat, token, uid):
     if not items:
         await ctx.bot.send_message(chat, "لا يوجد محتوى حالياً.")
         return
-    await send_items(ctx, chat, items, caption=footer_caption())
+    await send_items(ctx, chat, items, cap=footer_caption())
 
 
 # ============================================================
@@ -1033,7 +1109,7 @@ async def render_button(chat, ctx, cbid, uid):
     ctx.user_data["screen"] = ("btn", cbid)
     items = content_items(cbid)
     if items:
-        await send_items(ctx, chat, items, caption=footer_caption())
+        await send_items(ctx, chat, items, cap=footer_caption())
     kids = children("b", cbid)
     if kids:
         text = f"{row['name']}\nاختر:"
@@ -1041,7 +1117,7 @@ async def render_button(chat, ctx, cbid, uid):
     else:
         text = row["name"] if items else "لا يوجد محتوى حالياً."
         markup = build_menu(ctx, [])
-    await ctx.bot.send_message(chat, text, reply_markup=markup)
+    await ctx.bot.send_message(chat, text, reply_markup=markup, entities=custom_entities(text) or None)
 
 
 async def render(chat, ctx, screen, uid):
@@ -1063,7 +1139,7 @@ async def render(chat, ctx, screen, uid):
         screen = ("home",)
         text, markup = build_home(ctx, is_staff(uid))
     ctx.user_data["screen"] = screen
-    await ctx.bot.send_message(chat, text, reply_markup=markup)
+    await ctx.bot.send_message(chat, text, reply_markup=markup, entities=custom_entities(text) or None)
 
 
 def parent_of(screen):
@@ -1097,9 +1173,7 @@ async def do_action(chat, ctx, action, uid):
         await send_question_set(ctx, chat, action[1], action[2], action[3], uid)
     elif k == "panel":
         await open_panel(chat, ctx, uid == OWNER_ID)
-
-
-# ============================================================
+        # ============================================================
 # الاشتراك الإجباري (قنوات متعددة، فحص متوازٍ مع كاش)
 # ============================================================
 
@@ -2438,6 +2512,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if token:
         await deliver(ctx, msg.chat_id, token, uid)
+    await clear_reply_keyboard(ctx.bot, msg.chat_id)
     await render(msg.chat_id, ctx, ("home",), uid)
 
 
@@ -2454,13 +2529,24 @@ async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("تم الإلغاء.", reply_markup=owner_markup(user.id == OWNER_ID))
 
 
-async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg, user = update.effective_message, update.effective_user
-    if not msg or not user or not msg.text:
+class _Shim:
+    """يمثل ضغطة الزر كرسالة نصية، عشان نفس المنطق يشتغل للكتابة والأزرار."""
+    def __init__(self, chat_id, text, bot):
+        self.chat_id = chat_id
+        self.text = text
+        self.photo = None
+        self.document = None
+        self._bot = bot
+
+    async def reply_text(self, text, **kw):
+        return await self._bot.send_message(self.chat_id, text, **kw)
+
+
+async def handle_text(msg, ctx, uid):
+    text = (msg.text or "").strip()
+    if not text:
         return
-    uid = user.id
     upsert_user(uid)
-    text = msg.text.strip()
     staff, is_owner = is_staff(uid), uid == OWNER_ID
 
     if not staff and setting("bot_on") == "0":
@@ -2492,6 +2578,13 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_action(msg.chat_id, ctx, action, uid)
 
 
+async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg, user = update.effective_message, update.effective_user
+    if not msg or not user or not msg.text:
+        return
+    await handle_text(msg, ctx, user.id)
+
+
 async def on_media(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, user = update.effective_message, update.effective_user
     if msg and user and is_staff(user.id):
@@ -2505,6 +2598,15 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = cb.from_user.id
     chat = cb.message.chat_id if cb.message else uid
     upsert_user(uid)
+
+    if cb.data.startswith("b:"):
+        text = BTN_TEXT.get(cb.data[2:])
+        await cb.answer()
+        if not text:
+            await ctx.bot.send_message(chat, "هذا الزر قديم، أرسل /start وجرّب من جديد.")
+            return
+        await handle_text(_Shim(chat, text, ctx.bot), ctx, uid)
+        return
 
     if cb.data.startswith("chk:"):
         token = cb.data[4:]
@@ -2585,7 +2687,7 @@ def main():
         .build()
     )
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(CommandHandler(["admin", "eb"], cmd_admin))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(InlineQueryHandler(on_inline))
